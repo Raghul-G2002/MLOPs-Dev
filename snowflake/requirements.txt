@@ -1,0 +1,7 @@
+snowflake-ml-python
+snowflake-snowpark-python
+scikit-learn
+pyarrow
+fastparquet
+pandas
+torch
