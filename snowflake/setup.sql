@@ -26,15 +26,38 @@ create stage if not exists ml_db.features.raw_stage comment='stage for raw data 
        'tip_amount', 'tolls_amount', 'ehail_fee', 'improvement_surcharge',
        'total_amount', 'payment_type', 'trip_type', 'congestion_surcharge',
        'cbd_congestion_fee']
+VendorID int32
+lpep_pickup_datetime datetime64[us]
+lpep_dropoff_datetime datetime64[us]
+store_and_fwd_flag object
+RatecodeID float64
+PULocationID int32
+DOLocationID int32
+passenger_count float64
+trip_distance float64
+fare_amount float64
+extra float64
+mta_tax float64
+tip_amount float64
+tolls_amount float64
+ehail_fee float64
+improvement_surcharge float64
+total_amount float64
+payment_type float64
+trip_type float64
+congestion_surcharge float64
+cbd_congestion_fee float64
         */
+
+drop table if exists ml_db.features.raw_data;
 create or replace table ml_db.features.raw_data (
     VendorID integer,
-    tpep_pickup_datetime timestamp,
-    tpep_dropoff_datetime timestamp,
+    lpep_pickup_datetime timestamp_ntz,
+    lpep_dropoff_datetime timestamp_ntz,
     passenger_count integer,
     trip_distance float,
     RatecodeID integer,
-    store_and_fwd_flag string,
+    store_and_fwd_flag varchar(20),
     PULocationID integer,
     DOLocationID integer,
     payment_type integer,
@@ -46,31 +69,58 @@ create or replace table ml_db.features.raw_data (
     improvement_surcharge float,
     total_amount float,
     congestion_surcharge float,
-    airport_fee float
+    ehail_fee float,
+    trip_type integer,
+    cbd_congestion_fee float
 );
 
 create or replace file format ml_db.features.parquet_format
-type = 'PARQUET';
+type = 'PARQUET'
+use_logical_type = true;
 copy into ml_db.features.raw_data
-from (select $1:VendorID::integer,
-             $1:lpep_pickup_datetime::timestamp,
-             $1:lpep_dropoff_datetime::timestamp,
-             $1:passenger_count::integer,
-             $1:trip_distance::float,
-             $1:RatecodeID::integer,
-             $1:store_and_fwd_flag::string,
-             $1:PULocationID::integer,
-             $1:DOLocationID::integer,
-             $1:payment_type::integer,
-             $1:fare_amount::float,
-             $1:extra::float,
-             $1:mta_tax::float,
-             $1:tip_amount::float,
-             $1:tolls_amount::float,
-             $1:improvement_surcharge::float,
-             $1:total_amount::float,
-             $1:congestion_surcharge::float,
-             $1:airport_fee::float
-      from @ml_db.features.raw_stage/green_tripdata_2025-08.parquet);
+from (
+    -- TO_TIMESTAMP_NTZ($1:timestamp_col::string)
+    SELECT $1:VendorID::NUMBER(38, 0), 
+    TO_TIMESTAMP_NTZ($1:lpep_pickup_datetime::string), 
+    TO_TIMESTAMP_NTZ($1:lpep_dropoff_datetime::string),
+    $1:passenger_count::NUMBER(38, 0), 
+    $1:trip_distance::FLOAT, 
+    $1:RatecodeID::NUMBER(38, 0), 
+    $1:store_and_fwd_flag::VARCHAR, 
+    $1:PULocationID::NUMBER(38, 0), 
+    $1:DOLocationID::NUMBER(38, 0), 
+    $1:payment_type::NUMBER(38, 0), 
+    $1:fare_amount::FLOAT, 
+    $1:extra::FLOAT, 
+    $1:mta_tax::FLOAT, 
+    $1:tip_amount::FLOAT, 
+    $1:tolls_amount::FLOAT, 
+    $1:improvement_surcharge::FLOAT, 
+    $1:total_amount::FLOAT, 
+    $1:congestion_surcharge::FLOAT, 
+    $1:ehail_fee::FLOAT, 
+    $1:trip_type::NUMBER(38, 0), 
+    $1:cbd_congestion_fee::FLOAT
+    FROM '@"ML_DB"."FEATURES"."RAW_STAGE"'
+)
+FILES = ('green_tripdata_2025-08.parquet')
+FILE_FORMAT = (
+    TYPE=PARQUET,
+    REPLACE_INVALID_CHARACTERS=TRUE,
+    BINARY_AS_TEXT=FALSE
+)
+ON_ERROR=ABORT_STATEMENT;
 -- validate the data load
+
+select * from ml_db.features.raw_data limit 5;
 select count(*) from ml_db.features.raw_data;
+
+-- alter the table - convert the datetime columns from integer to timestamp\
+alter table ml_db.features.raw_data
+drop column lpep_pickup_datetime_new;
+alter table ml_db.features.raw_data
+add column lpep_pickup_datetime_new timestamp;
+update ml_db.features.raw_data
+set lpep_pickup_datetime_new = to_timestamp_(lpep_pickup_datetime);
+alter table ml_db.features.raw_data
+alter column lpep_dropoff_datetime set data type timestamp_ntz;
