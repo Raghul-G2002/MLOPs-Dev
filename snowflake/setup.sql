@@ -114,13 +114,3 @@ ON_ERROR=ABORT_STATEMENT;
 
 select * from ml_db.features.raw_data limit 5;
 select count(*) from ml_db.features.raw_data;
-
--- alter the table - convert the datetime columns from integer to timestamp\
-alter table ml_db.features.raw_data
-drop column lpep_pickup_datetime_new;
-alter table ml_db.features.raw_data
-add column lpep_pickup_datetime_new timestamp;
-update ml_db.features.raw_data
-set lpep_pickup_datetime_new = to_timestamp_(lpep_pickup_datetime);
-alter table ml_db.features.raw_data
-alter column lpep_dropoff_datetime set data type timestamp_ntz;
