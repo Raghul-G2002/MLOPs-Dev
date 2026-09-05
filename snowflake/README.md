@@ -3,669 +3,229 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Snowflake ML](https://img.shields.io/badge/Snowflake-ML-0078D4.svg)](https://docs.snowflake.com/en/developer-guide/snowflake-ml)
 
-A production-ready MLOps pipeline built entirely on Snowflake, demonstrating end-to-end machine learning lifecycle management—from feature engineering to model serving with complete ML lineage tracking.
+A production-ready, modular MLOps pipeline built entirely on Snowflake, demonstrating end-to-end machine learning lifecycle management—from Feature Store setup to model serving with Snowpark Container Services (SPCS) and complete ML lineage tracking.
+
+---
 
 ## 📋 Table of Contents
 
 - [Overview](#overview)
 - [Architecture](#architecture)
 - [Project Structure](#project-structure)
-- [Key Components](#key-components)
-  - [Feature Store](#feature-store)
-  - [Dataset Creation](#dataset-creation)
-  - [Model Training](#model-training)
-  - [Model Registry](#model-registry)
-  - [Model Serving with Snowpark Container Services](#model-serving-with-snowpark-container-services)
-  - [ML Lineage Tracking](#ml-lineage-tracking)
+- [Pipeline Components](#pipeline-components)
+  - [1. Configuration & Session (`config.py`)](#1-configuration--session-configpy)
+  - [2. Feature Store Pipeline (`feature_store_pipeline.py`)](#2-feature-store-pipeline-feature_store_pipelinepy)
+  - [3. Model Training & Registry (`model_training_pipeline.py`)](#3-model-training--registry-model_training_pipelinepy)
+  - [4. Container Deployment (`spcs_deployment.py`)](#4-container-deployment-spcs_deploymentpy)
+  - [5. Batch Inference & Lineage (`inference_lineage_pipeline.py`)](#5-batch-inference--lineage-inference_lineage_pipelinepy)
+  - [6. Master Orchestration (`main_pipeline.py`)](#6-master-orchestration-main_pipelinepy)
 - [Getting Started](#getting-started)
-- [Usage](#usage)
-- [Monitoring & Observability](#monitoring--observability)
-- [Contributing](#contributing)
+- [Execution Options](#execution-options)
+- [ML Lineage Graph](#ml-lineage-graph)
 - [License](#license)
+
+---
 
 ## Overview
 
-This project implements a complete MLOps workflow using Snowflake's native ML capabilities to predict **duration** and **speed** from a sample dataset. The pipeline leverages:
+This project implements a complete MLOps workflow using Snowflake's native ML capabilities (`snowflake-ml-python`) to predict taxi trip **duration** in minutes from NYC Green Taxi trip data.
 
-- **Snowflake Feature Store** for centralized feature management and point-in-time correct training datasets
-- **Snowflake Model Registry** for experiment tracking and model versioning
-- **Snowpark Container Services (SPCS)** for scalable model serving
-- **ML Lineage** for end-to-end data flow tracking from source tables to deployed models
+### Key Highlights:
+- **Snowflake Feature Store**: Centralized entity (`VENDOR_ID_ENTITY`), feature view (`TAXI_TRIP_FEATURES`), and training dataset creation (`TAXI_TRIP_TRAINING_DATASET`) with point-in-time correctness.
+- **Model Training & Packaging**: Scikit-Learn pipeline (`DataFrameDictVectorizer` + `RandomForestRegressor`) enabling direct DataFrame inputs without external pre-transforms.
+- **Model Registry & Experiments**: Experiment tracking via `snowflake.ml.experiment` and versioned model logging via `snowflake.ml.registry.Registry`.
+- **Snowpark Container Services (SPCS)**: Model deployment to dedicated CPU/GPU compute pools for containerized REST API serving.
+- **Batch Inference & ML Lineage**: Saving model predictions to `ML_DB.OUTPUTS.MODEL_PREDICTIONS` alongside model name, version, feature view, and training dataset metadata.
 
-The entire workflow runs within Snowflake, ensuring data governance, security, and compliance while eliminating data movement.
+---
 
 ## Architecture
 
-### High-Level MLOps Pipeline
-
 ```mermaid
 flowchart LR
-    subgraph Source["📊 Data Sources"]
-        A[Raw Tables]
-        B[Streaming Data]
+    subgraph RawData["📊 Raw Data"]
+        A[ML_DB.FEATURES.RAW_DATA]
     end
 
-    subgraph Feature["🏪 Feature Store"]
-        C[Feature Views]
-        D[Entities]
-        E[Feature Groups]
+    subgraph FeatureStore["🏪 Feature Store"]
+        B[ENGINEERED_FEATURES]
+        C["Entity<br/>VENDOR_ID_ENTITY"]
+        D["Feature View<br/>TAXI_TRIP_FEATURES:V1"]
     end
 
-    subgraph Training["🎯 Training Pipeline"]
-        F[Training Dataset<br/>generate_training_set]
-        G[Model Training<br/>Snowpark ML]
+    subgraph Training["🎯 Training & Experiments"]
+        E["Training Dataset<br/>TAXI_TRIP_TRAINING_DATASET:V1"]
+        F["ML Experiment Tracking<br/>snowflake.ml.experiment"]
+        G["Model Pipeline<br/>RandomForestRegressor"]
     end
 
     subgraph Registry["📦 Model Registry"]
-        H[Model Versions]
-        I[Metrics & Artifacts]
-        J[Experiment Tracking]
+        H["Registered Model<br/>TAXI_DURATION_PREDICTOR:V1"]
     end
 
     subgraph Serving["🚀 Model Serving"]
-        K[Snowpark Container<br/>Services]
-        L[REST API Endpoint]
+        I["SPCS Compute Pool<br/>ML_COMPUTE_POOL"]
+        J["Snowpark UDF / REST Endpoint"]
     end
 
-    subgraph Lineage["🔗 ML Lineage"]
-        M[Lineage Graph]
-        N[Output Table]
+    subgraph Lineage["🔗 Output & Lineage"]
+        K["Output Table<br/>ML_DB.OUTPUTS.MODEL_PREDICTIONS"]
     end
 
-    A --> C
+    A --> B
     B --> C
-    C --> F
-    D --> C
-    E --> C
+    B --> D
+    D --> E
+    E --> F
     F --> G
     G --> H
     H --> I
-    G --> J
+    I --> J
+    J --> K
     H --> K
-    K --> L
-    H --> M
-    F --> M
-    C --> M
-    M --> N
+    E --> K
 
-    style Source fill:#e1f5ff
-    style Feature fill:#fff4e1
+    style RawData fill:#e1f5ff
+    style FeatureStore fill:#fff4e1
     style Training fill:#f0f9ff
     style Registry fill:#f5f0ff
     style Serving fill:#e8f5e9
     style Lineage fill:#fff8e1
 ```
 
-### Complete MLOps Workflow
-
-```mermaid
-sequenceDiagram
-    participant DS as Data Scientist
-    participant FS as Feature Store
-    participant MR as Model Registry
-    participant SPCS as Snowpark Container Services
-    participant DB as Snowflake DB
-
-    DS->>FS: Create Feature Views
-    FS->>DB: Register Dynamic Tables
-    DS->>FS: Generate Training Dataset
-    FS->>DS: Point-in-Time Correct Data
-    DS->>MR: Train & Log Model
-    MR->>MR: Version Model + Metrics
-    MR->>SPCS: Deploy Model
-    SPCS->>SPCS: Load Model Artifacts
-    SPCS->>DB: Write Predictions
-    DS->>MR: Query ML Lineage
-    MR->>DS: Show Full Data Flow
-```
+---
 
 ## Project Structure
-mlops-dev/
-├── notebooks/
-│ ├── 01_feature_engineering.ipynb # Feature Store setup
-│ ├── 02_dataset_creation.ipynb # Training dataset generation
-│ ├── 03_model_training.ipynb # Model training & registry
-│ └── 04_model_deployment.ipynb # SPCS deployment
-├── src/
-│ ├── features.py # Feature transformation logic
-│ ├── training.py # Training pipeline
-│ ├── inference.py # Inference script for SPCS
-│ └── config.py # Configuration management
-├── sql/
-│ ├── setup.sql # Database & schema creation
-│ ├── compute_pool.sql # SPCS compute pool setup
-│ └── lineage_query.sql # ML lineage tracking queries
-├── docker/
-│ └── Dockerfile # Container image for SPCS
-├── tests/
-│ └── test_pipeline.py # Pipeline tests
-├── requirements.txt # Python dependencies
-├── README.md # This file
-└── LICENSE
 
-text
+```text
+snowflake/
+├── config.py                     # Connection parameters, database & model constants
+├── setup.sql                     # Snowflake SQL setup script for schemas, stages & SPCS pool
+├── feature_store_pipeline.py     # Feature Store setup (Entity, FeatureView & Training Dataset)
+├── model_training_pipeline.py    # Sklearn pipeline training, experiment tracking & registry
+├── spcs_deployment.py            # Deployment to Snowpark Container Services (SPCS)
+├── inference_lineage_pipeline.py # Batch inference, output table & lineage logging
+├── main_pipeline.py              # Master orchestrator running the end-to-end pipeline
+├── development_mlops.ipynb       # Interactive notebook walking through each stage
+├── requirements.txt              # Required Python packages
+└── README.md                     # Documentation
+```
 
-## Key Components
+---
 
-### Feature Store
+## Pipeline Components
 
-The Snowflake Feature Store provides centralized feature management with point-in-time correctness.
+### 1. Configuration & Session (`config.py`)
+Centralized environment configuration managing database credentials and object names (`ML_DB`, `FEATURES`, `MODELS`, `OUTPUTS`).
 
 ```python
-from snowflake.ml.feature_store import (
-    FeatureStore,
-    FeatureView,
-    Entity,
-)
-from snowflake.snowpark import Session
-
-# Initialize session and feature store
-session = Session.builder.getOrCreate()
-fs = FeatureStore(session=session, database_name="MLOPS_DEV", schema_name="FEATURE_STORE")
-
-# Register entity
-fs.create_entity(
-    name="trip_entity",
-    join_keys=["trip_id"],
-    description="Trip-level entity for duration and speed prediction"
-)
-
-# Create feature view
-@fs.create_feature_view(
-    name="trip_features",
-    version="1.0",
-    entities=["trip_entity"],
-    refresh_mode="INCREMENTAL",
-    schedule="0 0 * * *"  # Daily refresh
-)
-def create_trip_features(session):
-    df = session.table("MLOPS_DEV.RAW_DATA.TRIPS")
-    return df.select(
-        "trip_id",
-        "distance",
-        "traffic_level",
-        "weather_condition",
-        "hour_of_day",
-        "day_of_week"
-    )
+from config import get_snowflake_session
+session = get_snowflake_session()
 ```
 
-**Key Benefits:**
-- ✅ Point-in-time correct feature computation using ASOF JOIN
-- ✅ Automatic incremental refresh from source tables
-- ✅ Feature reuse across multiple models
-- ✅ Integration with Snowflake's data governance
-
-### Dataset Creation
-
-Generate training datasets directly from feature views:
+### 2. Feature Store Pipeline (`feature_store_pipeline.py`)
+Computes trip `DURATION` in minutes, registers `VENDOR_ID_ENTITY`, creates `TAXI_TRIP_FEATURES` feature view, and generates `TAXI_TRIP_TRAINING_DATASET`.
 
 ```python
-# Create spine DataFrame (rows to train on)
-spine_df = session.table("MLOPS_DEV.RAW_DATA.TRIPS").select(
-    "trip_id",
-    "start_time",
-    "duration",  # Target
-    "speed"      # Target
-)
-
-# Generate point-in-time correct training dataset
-training_df = fs.generate_training_set(
-    spine_df=spine_df,
-    feature_group="trip_features",
-    spine_timestamp_col="start_time",
-    spine_label_cols=["duration", "speed"],
-    include_feature_view_timestamp_col=False
-)
-
-training_df.write.mode("overwrite").save_as_table(
-    "MLOPS_DEV.TRAINING_DATA.TRIPS_TRAINING_SET"
-)
+from feature_store_pipeline import setup_feature_store
+fs, training_dataset = setup_feature_store(session)
 ```
 
-### Model Training
-
-Train and register models using Snowpark ML:
+### 3. Model Training & Registry (`model_training_pipeline.py`)
+Wraps categorical vectorization (`DictVectorizer`) and `RandomForestRegressor` into a single pipeline, logs experiment runs, and registers the versioned model in `ML_DB.MODELS`.
 
 ```python
-from snowflake.ml.registry import Registry
-from snowflake.ml.models import XGBRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, r2_score
-
-# Load training data
-train_df = session.table("MLOPS_DEV.TRAINING_DATA.TRIPS_TRAINING_SET")
-pdf = train_df.to_pandas()
-
-# Prepare features and targets
-feature_cols = ["distance", "traffic_level", "weather_condition", 
-                "hour_of_day", "day_of_week"]
-X = pdf[feature_cols]
-y_duration = pdf["duration"]
-y_speed = pdf["speed"]
-
-# Train duration model
-X_train, X_test, y_train, y_test = train_test_split(X, y_duration, test_size=0.2)
-duration_model = XGBRegressor(n_estimators=100, max_depth=6)
-duration_model.fit(X_train, y_train)
-
-# Evaluate
-y_pred = duration_model.predict(X_test)
-mae = mean_absolute_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
-
-# Register model
-registry = Registry(
-    session=session,
-    database_name="MLOPS_DEV",
-    schema_name="MODEL_REGISTRY"
-)
-
-model_ref = registry.log_model(
-    model_name="TRIP_DURATION_PREDICTOR",
-    version_name="v1.0",
-    model=duration_model,
-    target_platforms=["WAREHOUSE", "SNOWPARK_CONTAINER_SERVICES"],
-    conda_dependencies=["scikit-learn", "xgboost"],
-    sample_input_data=X_train.head(1),
-    metrics={
-        "mae": mae,
-        "r2": r2,
-        "training_samples": len(X_train),
-        "test_samples": len(X_test)
-    },
-    description="Predicts trip duration based on distance, traffic, and weather"
-)
+from model_training_pipeline import train_and_register_model
+registry, registered_model = train_and_register_model(session, training_dataset)
 ```
 
-### Model Registry
-
-The Model Registry provides:
-- **Version Control**: Track multiple model versions with metadata
-- **Experiment Tracking**: Compare metrics across training runs
-- **ML Lineage**: Automatic tracking of datasets, features, and source tables
-- **Deployment**: Direct deployment to Snowpark Container Services
+### 4. Container Deployment (`spcs_deployment.py`)
+Deploys the registered model version directly to Snowpark Container Services (`ML_COMPUTE_POOL`).
 
 ```python
-# Query model versions
-models = registry.get_models()
-for model in models:
-    print(f"Model: {model.name}, Versions: {model.versions}")
-
-# Set default version for inference
-model_ref.set_default()
-
-# View lineage in Snowsight UI
-# Navigate to: AI & ML → Models → [Your Model] → Lineage Tab
+from spcs_deployment import deploy_to_spcs
+deploy_to_spcs(session)
 ```
 
-### Model Serving with Snowpark Container Services
+### 5. Batch Inference & Lineage (`inference_lineage_pipeline.py`)
+Runs predictions on new trip data and saves the output to `ML_DB.OUTPUTS.MODEL_PREDICTIONS` with complete lineage tracking metadata.
 
-Deploy models as scalable REST API endpoints:
-
-**Step 1: Create Compute Pool**
-
-```sql
--- Create compute pool for model serving
-CREATE COMPUTE POOL MLOPS_DEV_POOL
-  MIN_NODES = 1
-  MAX_NODES = 5
-  INSTANCE_FAMILY = CPU_X64_XS;
+```python
+from inference_lineage_pipeline import run_batch_inference_and_lineage
+results_df = run_batch_inference_and_lineage(session, limit=100)
 ```
 
-**Step 2: Create Image Repository**
-
-```sql
--- Create image repository for container images
-CREATE IMAGE REPOSITORY MLOPS_DEV_IMAGES;
-```
-
-**Step 3: Build and Push Container Image**
+### 6. Master Orchestration (`main_pipeline.py`)
+Executes all stages sequentially:
 
 ```bash
-# Build Docker image locally
-docker build -t trip-duration-model:v1 -f docker/Dockerfile .
-
-# Tag for Snowflake registry
-docker tag trip-duration-model:v1 \
-  <org>-<account>.registry.snowflakecomputing.com/mlops_dev/model_registry/ml_images/trip-duration-model:v1
-
-# Push to Snowflake
-docker push <org>-<account>.registry.snowflakecomputing.com/mlops_dev/model_registry/ml_images/trip-duration-model:v1
+python main_pipeline.py
 ```
 
-**Step 4: Deploy Model**
-
-```python
-from snowflake.ml.model import Model
-
-# Load registered model
-model = Model.from_name(
-    session=session,
-    model_name="TRIP_DURATION_PREDICTOR",
-    version_name="v1.0"
-)
-
-# Deploy to SPCS
-service = model.deploy(
-    service_name="TRIP_DURATION_SERVICE",
-    compute_pool="MLOPS_DEV_POOL",
-    create_api_endpoint=True,
-    num_workers=2,
-    cpu=1000,  # milli-cores
-    memory=2048  # MB
-)
-
-print(f"Service deployed: {service.service_name}")
-print(f"API Endpoint: {service.api_endpoint}")
-```
-
-**Step 5: Invoke Model**
-
-```python
-# SQL invocation
-SELECT MLOPS_DEV.MODEL_REGISTRY.TRIP_DURATION_PREDICTOR!predict(
-    OBJECT_CONSTRUCT(
-        'distance', 15.5,
-        'traffic_level', 3,
-        'weather_condition', 1,
-        'hour_of_day', 14,
-        'day_of_week', 2
-    )
-) AS predicted_duration;
-
-# Python invocation
-import requests
-
-api_endpoint = service.api_endpoint
-headers = {"Authorization": f"Bearer {service.api_token}"}
-
-payload = {
-    "distance": 15.5,
-    "traffic_level": 3,
-    "weather_condition": 1,
-    "hour_of_day": 14,
-    "day_of_week": 2
-}
-
-response = requests.post(api_endpoint, json=payload, headers=headers)
-prediction = response.json()
-```
-
-### ML Lineage Tracking
-
-Snowflake automatically tracks ML lineage from source tables through features to deployed models:
-
-```sql
--- Query ML lineage for a model
-SELECT 
-    m.name AS model_name,
-    mv.version_name,
-    mv.lineage_graph
-FROM MLOPS_DEV.MODEL_REGISTRY.MODELS m
-JOIN MLOPS_DEV.MODEL_REGISTRY.MODEL_VERSIONS mv 
-    ON m.id = mv.model_id
-WHERE m.name = 'TRIP_DURATION_PREDICTOR';
-
--- View lineage in Snowsight
--- AI & ML → Models → TRIP_DURATION_PREDICTOR → Lineage Tab
-```
-
-**Lineage Graph Visualization:**
-
-```mermaid
-flowchart TD
-    subgraph Source["Source Data"]
-        A[RAW_DATA.TRIPS]
-        B[RAW_DATA.WEATHER]
-        C[RAW_DATA.TRAFFIC]
-    end
-
-    subgraph Features["Feature Store"]
-        D[FEATURE_STORE.trip_features<br/>Feature View]
-        E[FEATURE_STORE.weather_features<br/>Feature View]
-    end
-
-    subgraph Dataset["Training Data"]
-        F[TRAINING_DATA.TRIPS_TRAINING_SET<br/>Generated Dataset]
-    end
-
-    subgraph Model["Model Registry"]
-        G[MODEL_REGISTRY.TRIP_DURATION_PREDICTOR<br/>v1.0]
-    end
-
-    subgraph Serving["Serving"]
-        H[SPCS.TRIP_DURATION_SERVICE<br/>Inference Service]
-    end
-
-    subgraph Output["Predictions"]
-        I[PREDICTIONS.TRIP_RESULTS<br/>Output Table]
-    end
-
-    A --> D
-    B --> E
-    C --> D
-    D --> F
-    E --> F
-    F --> G
-    G --> H
-    H --> I
-
-    style Source fill:#e3f2fd
-    style Features fill:#fff3e0
-    style Dataset fill:#f3e5f5
-    style Model fill:#e8f5e9
-    style Serving fill:#ffebee
-    style Output fill:#e0f7fa
-```
-
-**Complete ML Lineage Query:**
-
-```sql
--- Full lineage tracking query
-WITH model_lineage AS (
-    SELECT 
-        m.name AS model_name,
-        mv.version_name,
-        mv.lineage_graph,
-        mv.created_at
-    FROM MLOPS_DEV.MODEL_REGISTRY.MODELS m
-    JOIN MLOPS_DEV.MODEL_REGISTRY.MODEL_VERSIONS mv 
-        ON m.id = mv.model_id
-    WHERE m.name = 'TRIP_DURATION_PREDICTOR'
-)
-SELECT 
-    model_name,
-    version_name,
-    created_at,
-    GET_PATH(lineage_graph, '$.nodes[*].name') AS source_tables,
-    GET_PATH(lineage_graph, '$.edges[*].source') AS feature_views,
-    GET_PATH(lineage_graph, '$.edges[*].target') AS datasets
-FROM model_lineage;
-```
-
-**Output Table for Lineage Demonstration:**
-
-```sql
--- Create lineage output table
-CREATE OR REPLACE TABLE MLOPS_DEV.LINEAGE_TRACKING.ML_LINEAGE_OUTPUT (
-    model_name STRING,
-    version_name STRING,
-    source_tables ARRAY,
-    feature_views ARRAY,
-    training_dataset STRING,
-    deployed_service STRING,
-    created_at TIMESTAMP,
-    metrics OBJECT
-);
-
--- Insert lineage record
-INSERT INTO MLOPS_DEV.LINEAGE_TRACKING.ML_LINEAGE_OUTPUT
-SELECT 
-    'TRIP_DURATION_PREDICTOR',
-    'v1.0',
-    ['RAW_DATA.TRIPS', 'RAW_DATA.WEATHER', 'RAW_DATA.TRAFFIC'],
-    ['FEATURE_STORE.trip_features', 'FEATURE_STORE.weather_features'],
-    'TRAINING_DATA.TRIPS_TRAINING_SET',
-    'SPCS.TRIP_DURATION_SERVICE',
-    CURRENT_TIMESTAMP(),
-    OBJECT_CONSTRUCT('mae', 2.34, 'r2', 0.89)
-;
-```
+---
 
 ## Getting Started
 
 ### Prerequisites
 
-- Snowflake account with ML features enabled
 - Python 3.9+
-- Snowpark ML: `pip install snowflake-ml-python`
-- Docker (for SPCS deployment)
+- Active Snowflake account with Snowpark and Snowflake ML enabled
+- Installed Python packages (`pip install -r requirements.txt`)
 
-### Setup
+### 1. SQL Environment Setup
+Run `setup.sql` in Snowsight or via SnowSQL with `ACCOUNTADMIN` privileges to create schemas, stages, compute pools, and roles:
 
-1. **Clone the repository**
-
-```bash
-git clone https://github.com/yourusername/mlops-dev.git
-cd mlops-dev
+```sql
+-- Run setup.sql in Snowflake
 ```
 
-2. **Install dependencies**
-
+### 2. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-3. **Configure Snowflake connection**
+---
+
+## Execution Options
+
+### Option A: Modular Python Pipeline
+Run individual pipeline components or the full orchestrator:
 
 ```bash
-export SNOWFLAKE_ACCOUNT="<your-account>"
-export SNOWFLAKE_USER="<your-user>"
-export SNOWFLAKE_PASSWORD="<your-password>"
-export SNOWFLAKE_ROLE="MLOPS_DEV_ROLE"
-export SNOWFLAKE_WAREHOUSE="MLOPS_DEV_WH"
+# Run full pipeline end-to-end
+python main_pipeline.py
+
+# Or run individual stages
+python feature_store_pipeline.py
+python model_training_pipeline.py
+python spcs_deployment.py
+python inference_lineage_pipeline.py
 ```
 
-4. **Run setup SQL**
-
-```bash
-snowsql -f sql/setup.sql
-```
-
-5. **Execute notebooks in order**
-notebooks/01_feature_engineering.ipynb
-notebooks/02_dataset_creation.ipynb
-notebooks/03_model_training.ipynb
-notebooks/04_model_deployment.ipynb
-
-text
-
-## Usage
-
-### Training a New Model Version
-
-```python
-# Run training pipeline
-python src/training.py --model-name TRIP_DURATION_PREDICTOR --version v2.0
-
-# This will:
-# 1. Generate fresh training dataset from Feature Store
-# 2. Train model with hyperparameter tuning
-# 3. Log to Model Registry with metrics
-# 4. Update ML lineage automatically
-```
-
-### Deploying to Production
-
-```python
-# Deploy latest model version
-python src/deployment.py --model-name TRIP_DURATION_PREDICTOR --service-name PROD_DURATION_SERVICE
-
-# This will:
-# 1. Fetch latest model from Registry
-# 2. Build container image
-# 3. Deploy to SPCS compute pool
-# 4. Create REST API endpoint
-```
-
-### Monitoring Predictions
-
-```sql
--- Query prediction output table
-SELECT * 
-FROM MLOPS_DEV.PREDICTIONS.TRIP_RESULTS
-ORDER BY prediction_timestamp DESC
-LIMIT 100;
-
--- Monitor prediction distribution
-SELECT 
-    DATE(prediction_timestamp) AS prediction_date,
-    AVG(predicted_duration) AS avg_duration,
-    AVG(predicted_speed) AS avg_speed,
-    COUNT(*) AS prediction_count
-FROM MLOPS_DEV.PREDICTIONS.TRIP_RESULTS
-GROUP BY DATE(prediction_timestamp)
-ORDER BY prediction_date DESC;
-```
-
-## Monitoring & Observability
-
-### Model Performance Monitoring
-
-```python
-from snowflake.ml.monitoring import ModelMonitor
-
-# Create monitor for deployed model
-monitor = ModelMonitor(
-    session=session,
-    model_name="TRIP_DURATION_PREDICTOR",
-    service_name="TRIP_DURATION_SERVICE"
-)
-
-# Track drift and performance
-monitor.enable(
-    metrics=["prediction_drift", "feature_drift", "latency"],
-    schedule="0 */6 * * *"  # Every 6 hours
-)
-```
-
-### Query History for Lineage
-
-```sql
--- Track all queries that contributed to model training
-SELECT 
-    query_text,
-    start_time,
-    end_time,
-    total_elapsed_time
-FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-WHERE database_name = 'MLOPS_DEV'
-    AND query_text LIKE '%TRIP_DURATION_PREDICTOR%'
-ORDER BY start_time DESC
-LIMIT 50;
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Resources
-
-- [Snowflake ML Documentation](https://docs.snowflake.com/en/developer-guide/snowflake-ml)
-- [Feature Store Guide](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/overview)
-- [Model Registry Documentation](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry)
-- [Snowpark Container Services](https://docs.snowflake.com/en/developer-guide/snowpark-container-services)
-- [ML Lineage Tracking](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/snowsight-ui#model-details)
+### Option B: Interactive Jupyter Notebook
+Open and run `development_mlops.ipynb` for step-by-step interactive execution.
 
 ---
 
-**Built with ❤️ using Snowflake ML**
+## ML Lineage Graph
+
+All generated predictions track end-to-end lineage back to the training dataset and raw source table:
+
+| Column Name | Description | Example Value |
+|---|---|---|
+| `PULOCATIONID` | Pickup location ID | `70` |
+| `DOLOCATIONID` | Dropoff location ID | `82` |
+| `TRIP_DISTANCE` | Trip distance in miles | `2.44` |
+| `ACTUAL_DURATION_MINUTES` | Ground truth trip duration | `12.5` |
+| `PREDICTED_DURATION_MINUTES` | Model prediction | `13.1` |
+| `MODEL_NAME` | Registered model name | `TAXI_DURATION_PREDICTOR` |
+| `MODEL_VERSION` | Model version | `V1` |
+| `FEATURE_VIEW` | Snowflake Feature View | `TAXI_TRIP_FEATURES:V1` |
+| `TRAINING_DATASET` | Snowflake Training Dataset | `TAXI_TRIP_TRAINING_DATASET:V1` |
+| `INFERENCE_TIMESTAMP` | Time of prediction execution | `2026-09-06T00:25:00` |
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

@@ -1,85 +1,63 @@
---Create a new role called ml_role
-create role ml_role;
-grant usage on warehouse compute_wh to role ml_role;
+-- Snowflake MLOps Setup Script
+-- Complete infrastructure creation for Feature Store, Model Registry, SPCS, and Lineage Output
 
---Create database, and schemas for features, models and outputs
-create database if not exists ml_db;
-grant ownership on database ml_db to role ml_role;
-grant role ml_role to user raghulg;
-use role ml_role;
+-- 1. Create Role & Warehouse Access
+CREATE ROLE IF NOT EXISTS ml_role;
+GRANT USAGE ON WAREHOUSE compute_wh TO ROLE ml_role;
 
-create schema if not exists ml_db.features;
-grant ownership on schema ml_db.features to role ml_role;
-create schema if not exists ml_db.models;
-grant ownership on schema ml_db.models to role ml_role;
+-- 2. Create Database & Schemas
+CREATE DATABASE IF NOT EXISTS ml_db;
+GRANT OWNERSHIP ON DATABASE ml_db TO ROLE ml_role;
+GRANT ROLE ml_role TO USER raghulg;
 
-create schema if not exists ml_db.outputs;
-grant ownership on schema ml_db.outputs to role ml_role;
+USE ROLE ml_role;
+USE DATABASE ml_db;
 
--- push the parquet files and load into a table in the features schema
-create stage if not exists ml_db.features.raw_stage comment='stage for raw data files';
--- Once pushing the parquet files to the stage, run the below copy command to load data into a table
-/*
-'VendorID', 'lpep_pickup_datetime', 'lpep_dropoff_datetime',
-       'store_and_fwd_flag', 'RatecodeID', 'PULocationID', 'DOLocationID',
-       'passenger_count', 'trip_distance', 'fare_amount', 'extra', 'mta_tax',
-       'tip_amount', 'tolls_amount', 'ehail_fee', 'improvement_surcharge',
-       'total_amount', 'payment_type', 'trip_type', 'congestion_surcharge',
-       'cbd_congestion_fee']
-VendorID int32
-lpep_pickup_datetime datetime64[us]
-lpep_dropoff_datetime datetime64[us]
-store_and_fwd_flag object
-RatecodeID float64
-PULocationID int32
-DOLocationID int32
-passenger_count float64
-trip_distance float64
-fare_amount float64
-extra float64
-mta_tax float64
-tip_amount float64
-tolls_amount float64
-ehail_fee float64
-improvement_surcharge float64
-total_amount float64
-payment_type float64
-trip_type float64
-congestion_surcharge float64
-cbd_congestion_fee float64
-        */
+CREATE SCHEMA IF NOT EXISTS ml_db.features;
+GRANT OWNERSHIP ON SCHEMA ml_db.features TO ROLE ml_role;
 
-drop table if exists ml_db.features.raw_data;
-create or replace table ml_db.features.raw_data (
-    VendorID integer,
-    lpep_pickup_datetime timestamp_ntz,
-    lpep_dropoff_datetime timestamp_ntz,
-    passenger_count integer,
-    trip_distance float,
-    RatecodeID integer,
-    store_and_fwd_flag varchar(20),
-    PULocationID integer,
-    DOLocationID integer,
-    payment_type integer,
-    fare_amount float,
-    extra float,
-    mta_tax float,
-    tip_amount float,
-    tolls_amount float,
-    improvement_surcharge float,
-    total_amount float,
-    congestion_surcharge float,
-    ehail_fee float,
-    trip_type integer,
-    cbd_congestion_fee float
+CREATE SCHEMA IF NOT EXISTS ml_db.models;
+GRANT OWNERSHIP ON SCHEMA ml_db.models TO ROLE ml_role;
+
+CREATE SCHEMA IF NOT EXISTS ml_db.outputs;
+GRANT OWNERSHIP ON SCHEMA ml_db.outputs TO ROLE ml_role;
+
+-- 3. Create Raw Data Stage and Table
+CREATE STAGE IF NOT EXISTS ml_db.features.raw_stage COMMENT='Stage for raw taxi trip data files';
+
+CREATE OR REPLACE TABLE ml_db.features.raw_data (
+    VendorID INTEGER,
+    lpep_pickup_datetime TIMESTAMP_NTZ,
+    lpep_dropoff_datetime TIMESTAMP_NTZ,
+    passenger_count INTEGER,
+    trip_distance FLOAT,
+    RatecodeID INTEGER,
+    store_and_fwd_flag VARCHAR(20),
+    PULocationID INTEGER,
+    DOLocationID INTEGER,
+    payment_type INTEGER,
+    fare_amount FLOAT,
+    extra FLOAT,
+    mta_tax FLOAT,
+    tip_amount FLOAT,
+    tolls_amount FLOAT,
+    improvement_surcharge FLOAT,
+    total_amount FLOAT,
+    congestion_surcharge FLOAT,
+    ehail_fee FLOAT,
+    trip_type INTEGER,
+    cbd_congestion_fee FLOAT
 );
 
-create or replace file format ml_db.features.parquet_format
-type = 'PARQUET'
-use_logical_type = true;
-copy into ml_db.features.raw_data
-from (
-    -- TO_TIMESTAMP_NTZ($1:timestamp_col::string)
+-- File Format for Parquet Loading
+CREATE OR REPLACE FILE FORMAT ml_db.features.parquet_format
+    TYPE = 'PARQUET'
+    USE_LOGICAL_TYPE = TRUE;
+
+-- Sample COPY INTO statement (to be run after uploading parquet data to stage)
+/*
+COPY INTO ml_db.features.raw_data
+FROM (
     SELECT $1:VendorID::NUMBER(38, 0), 
     TO_TIMESTAMP_NTZ($1:lpep_pickup_datetime::string), 
     TO_TIMESTAMP_NTZ($1:lpep_dropoff_datetime::string),
@@ -101,7 +79,7 @@ from (
     $1:ehail_fee::FLOAT, 
     $1:trip_type::NUMBER(38, 0), 
     $1:cbd_congestion_fee::FLOAT
-    FROM '@"ML_DB"."FEATURES"."RAW_STAGE"'
+    FROM '@ML_DB.FEATURES.RAW_STAGE'
 )
 FILES = ('green_tripdata_2025-08.parquet')
 FILE_FORMAT = (
@@ -110,7 +88,31 @@ FILE_FORMAT = (
     BINARY_AS_TEXT=FALSE
 )
 ON_ERROR=ABORT_STATEMENT;
--- validate the data load
+*/
 
-select * from ml_db.features.raw_data limit 5;
-select count(*) from ml_db.features.raw_data;
+-- 4. Snowpark Container Services (SPCS) Infrastructure
+-- (Requires ACCOUNTADMIN role for Compute Pool & Image Repository setup)
+USE ROLE accountadmin;
+
+-- Create Compute Pool for Model Deployment
+CREATE COMPUTE POOL IF NOT EXISTS ml_compute_pool
+    MIN_NODES = 1
+    MAX_NODES = 2
+    INSTANCE_FAMILY = CPU_XSM
+    AUTO_SUSPEND_SECS = 3600
+    COMMENT = 'Compute Pool for SPCS Model Serving';
+
+GRANT USAGE, MONITOR ON COMPUTE POOL ml_compute_pool TO ROLE ml_role;
+
+-- Create Image Repository for SPCS Docker Containers
+CREATE IMAGE REPOSITORY IF NOT EXISTS ml_db.models.spcs_image_repo;
+GRANT READ, WRITE ON IMAGE REPOSITORY ml_db.models.spcs_image_repo TO ROLE ml_role;
+
+-- Grant SPCS privileges to ml_role
+GRANT CREATE SERVICE ON SCHEMA ml_db.models TO ROLE ml_role;
+GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO ROLE ml_role;
+
+USE ROLE ml_role;
+
+-- Verification
+SELECT current_role(), current_database(), current_schema();
